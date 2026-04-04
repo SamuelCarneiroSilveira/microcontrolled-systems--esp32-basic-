@@ -25,9 +25,9 @@ void setup() {
     pinMode(allPins[x],OUTPUT);    
   }
 
-  digitalWrite(allPins[5], HIGH);
-  digitalWrite(allPins[6], LOW);
-  digitalWrite(allPins[7], LOW);
+  digitalWrite(allPins[5], HIGH);// RGB
+  digitalWrite(allPins[6], LOW); // Seven1
+  digitalWrite(allPins[7], LOW); // Seven2
 }
 
 void PiscaLed(int i){
