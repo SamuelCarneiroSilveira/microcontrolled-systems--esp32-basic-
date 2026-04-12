@@ -1,8 +1,8 @@
 #include <Arduino.h>
 
 //#define EXERCICIO_1 // Piscar todos
-#define EXERCICIO_2 // Contador Binário 
-//#define EXERCICIO_3 // Contador 7 Seg
+//#define EXERCICIO_2 // Contador Binário 
+#define EXERCICIO_3 // Contador 7 Seg
 
 // Exercicio 1 e 2
 const int allPins[] = {15, 2, 4, 16, 17, 26, 27, 14, 5, 18, 19};
