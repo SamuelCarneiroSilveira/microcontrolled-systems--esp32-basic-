@@ -2,123 +2,105 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <Adafruit_NeoPixel.h>
 
-// === MAPEAMENTO DE PINOS ===
-#define SDA_PIN 23
-#define SCL_PIN 22
-#define BOTAO 13
-#define LED_EXT_VERDE 21
-#define LED_EXT_VERMELHO 20
-#define RGB_NATIVO 8 // Pino interno padrão do LED RGB no C6 DevKit
+#define RX_PIN 7
+#define TX_PIN 6
+#define DE_RE 8
 
-// === OBJETOS DE HARDWARE ===
+HardwareSerial RS485(1);
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
-Adafruit_NeoPixel rgb(1, RGB_NATIVO, NEO_GRB + NEO_KHZ800);
 
-// === VARIÁVEIS DE CONTROLE (MÁQUINA DE ESTADOS) ===
-bool modoAtivo = false; // false = Standby, true = Operando
+int ultimoValor = 0;
+unsigned long pacotesOK = 0;
+unsigned long pacotesERRO = 0;
+String bufferEntrada = "";
+unsigned long ultimaTela = 0;
 
-// Controle de Tempo do RGB (Sem usar delay)
-unsigned long tempoAnteriorBlink = 0;
-bool estadoBlink = false;
-
-// Controle do Botão (Filtro Debounce Anti-Ruído)
-int estadoBotao;
-int ultimoEstadoBotao = HIGH;
-unsigned long tempoUltimoDebounce = 0;
-const unsigned long tempoDebounce = 50; 
-
-// Função que só é chamada quando o botão é apertado
-void atualizarIHM() {
-  // 1. Atualiza LEDs Externos
-  digitalWrite(LED_EXT_VERDE, modoAtivo ? HIGH : LOW);
-  digitalWrite(LED_EXT_VERMELHO, modoAtivo ? LOW : HIGH);
-
-  // 2. Atualiza a Tela OLED
+void atualizarTela() {
   display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  
   display.setTextSize(1);
-  display.setCursor(0, 10);
-  display.println("SISTEMA MESTRE");
+  display.setTextColor(WHITE);
+  display.setCursor(0,0);
+  display.print("C6 - RS485 Monitor");
+
+  display.setCursor(0,15);
+  display.print("OK: "); display.print(pacotesOK);
+  display.print(" ERR: "); display.println(pacotesERRO);
+
+  display.setCursor(0,40);
+  display.print("VALOR IHM:");
   
-  display.setCursor(0, 30);
-  display.setTextSize(2); // Fonte grande para destacar
-  
-  if(modoAtivo) {
-    display.println("OPERANDO");
-  } else {
-    display.println("STANDBY");
-  }
-  
+  display.setTextSize(2);
+  display.setCursor(45, 50);
+  display.print(ultimoValor);
+
   display.display();
 }
 
 void setup() {
-  Serial.begin(115200);
+  pinMode(DE_RE, OUTPUT);
+  digitalWrite(DE_RE, LOW); // Nasce escutando
+
+  RS485.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
+  Wire.begin(23, 22);
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   
-  // Configura pinos
-  pinMode(BOTAO, INPUT_PULLUP);
-  pinMode(LED_EXT_VERDE, OUTPUT);
-  pinMode(LED_EXT_VERMELHO, OUTPUT);
-
-  // Inicia Tela
-  Wire.begin(SDA_PIN, SCL_PIN);
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("Erro na tela OLED!");
-    for(;;);
-  }
-
-  // Inicia LED RGB Embutido
-  rgb.begin();
-  rgb.setBrightness(30); // Limita o brilho (0-255) para não cegar ninguem
-  rgb.show(); // Desliga os pixels no inicio
-
-  // Desenha a tela inicial
-  atualizarIHM(); 
+  atualizarTela();
 }
 
 void loop() {
-  // ==========================================
-  // TAREFA 1: LEITURA DO BOTÃO (Com Debounce)
-  // ==========================================
-  int leitura = digitalRead(BOTAO);
-  if (leitura != ultimoEstadoBotao) {
-    tempoUltimoDebounce = millis();
-  }
-  
-  if ((millis() - tempoUltimoDebounce) > tempoDebounce) {
-    if (leitura != estadoBotao) {
-      estadoBotao = leitura;
-      
-      // Se o botão foi apertado (foi para LOW)
-      if (estadoBotao == LOW) { 
-        modoAtivo = !modoAtivo; // Inverte o modo atual
-        atualizarIHM();         // Aciona a troca de tela e LEDs externos
-      }
+  // 1. Processamento Bruto do Barramento
+  while (RS485.available() > 0) {
+    char c = RS485.read();
+    if (c == '<') { 
+      bufferEntrada = ""; // Início de pacote
     }
-  }
-  ultimoEstadoBotao = leitura;
+    else if (c == '>') {
+      // Fim de pacote - Hora da auditoria
+      int sep = bufferEntrada.lastIndexOf(':');
+      if (sep != -1) {
+        String payload = bufferEntrada.substring(0, sep);
+        String crcRx = bufferEntrada.substring(sep + 1);
 
-  // ==========================================
-  // TAREFA 2: PISCAR O LED RGB A CADA 500ms
-  // ==========================================
-  if (millis() - tempoAnteriorBlink >= 500) {
-    tempoAnteriorBlink = millis(); // Reseta o cronômetro
-    estadoBlink = !estadoBlink;    // Inverte a chave do pisca
+        byte crcCalc = 0;
+        for (int i=0; i<payload.length(); i++) crcCalc ^= payload[i];
+        String crcCalcStr = String(crcCalc, HEX);
+        crcCalcStr.toUpperCase();
 
-    if (estadoBlink) {
-      // Hora de acender! Qual cor?
-      if (modoAtivo) {
-        rgb.setPixelColor(0, rgb.Color(0, 255, 0)); // Verde puro
+        if (crcRx == crcCalcStr) {
+          // PACOTE LIMPO E APROVADO!
+          pacotesOK++;
+          ultimoValor = payload.substring(4).toInt();
+
+          // Envia o Recibo (ACK)
+          digitalWrite(DE_RE, HIGH);
+          delay(1);
+          RS485.print("<ACK>");
+          RS485.flush();
+          digitalWrite(DE_RE, LOW);
+        } else {
+          // EMI: Checksum falhou
+          pacotesERRO++;
+        }
       } else {
-        rgb.setPixelColor(0, rgb.Color(255, 0, 0)); // Vermelho puro
+        // EMI: Sinal corrompido ou cortado
+        pacotesERRO++;
       }
+      bufferEntrada = "";
     } else {
-      // Hora de apagar!
-      rgb.setPixelColor(0, rgb.Color(0, 0, 0)); 
+      bufferEntrada += c;
     }
-    rgb.show(); // Manda o comando para o hardware do RGB
+
+    // Trava de segurança contra inundação de lixo
+    if (bufferEntrada.length() > 25) { 
+      pacotesERRO++; 
+      bufferEntrada = ""; 
+    }
+  }
+
+  // 2. Atualização de Tela Desacoplada (Apenas 4 vezes por segundo)
+  if (millis() - ultimaTela >= 250) {
+    ultimaTela = millis();
+    atualizarTela();
   }
 }
